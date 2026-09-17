@@ -15,7 +15,12 @@ COPY pyproject.toml ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-install-project
 
+COPY utils/ ./utils/
 COPY main.py ./
+
+
+ENV FORCE_COLOR=1
+ENV LOG_LEVEL=DEBUG
 
 ENV PATH="/app/.venv/bin:$PATH"
 
