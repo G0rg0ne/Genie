@@ -28,10 +28,10 @@ def agent_graph() -> StateGraph:
 
     # return the graph
     logger.info("Agent graph created")
-    return graph
+    return graph.compile()
 
 # create the graph
-graph = agent_graph().compile()
+graph = agent_graph()
 
 # run the graph
 response = graph.invoke({"messages": [HumanMessage(content="Hello, how are you?")]})
