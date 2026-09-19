@@ -1,4 +1,6 @@
 from re import M
+
+from langsmith.run_helpers import R
 from utils.logging_config import setup_logging
 
 setup_logging()
@@ -11,8 +13,9 @@ from typing import Annotated, Literal, TypedDict
 from langsmith import Client
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, MessagesState, START, END
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage
+from langgraph.prebuilt import ToolNode
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langchain_tavily import TavilySearch
@@ -43,11 +46,11 @@ def web_search(query:str)->str:
 TOOLS = [web_search]
 
 # Define LLM call
-llm =  ChatOpenAI(model=MODEL_NAME)
+llm =  ChatOpenAI(model=MODEL_NAME,use_responses_api=True)
 client = Client()
 PLANNER_PROMPT = client.pull_prompt("planner")
-#RESEARCHER_PROMPT = client.pull_prompt(prompt_name)
-#WRITER_PROMPT = client.pull_prompt(prompt_name)
+RESEARCHER_PROMPT = client.pull_prompt("researcher-1")
+WRITER_PROMPT = client.pull_prompt("reporter-writer")
 
 #templated = prompt.format_messages(question=question)
 class AgentState(TypedDict):
@@ -84,15 +87,91 @@ def planner_node(state: AgentState) -> dict:
         "sub_questions": planer_response.sub_questions,
     }
 
+def route_after_plan(state: AgentState) -> Literal["researcher", "writer"]:
+    return "researcher" if state["needs_research"] else "writer"
+#Define researcher
+
+def researcher_node(state: AgentState) -> dict:
+    MAX_SEARCHES = 4
+    history = state.get("research_messages", [])
+    seed = []
+    if not history:
+        bullets = "\n".join(f"- {q}" for q in state["sub_questions"])
+        seed = RESEARCHER_PROMPT.invoke({
+                "date": date.today().isoformat(),
+                "MAX_SEARCHES": MAX_SEARCHES,
+                "question": state["question"],
+                "bullets": bullets
+        }).to_messages()
+    convo = [*history, *seed]
+    used = sum(1 for m in convo if isinstance(m, AIMessage) and m.tool_calls)
+
+    model = (
+        llm.bind_tools(TOOLS, parallel_tool_calls=False)
+        if used < MAX_SEARCHES
+        else llm
+    )
+    reply = model.invoke(convo)
+    out: dict = {"research_messages": [*seed, reply]}
+
+    if not getattr(reply, "tool_calls", None):
+        out["notes"] = reply.content
+    return out
+
+def route_after_research(state: AgentState) -> Literal["tools", "writer"]:
+    last = state["research_messages"][-1]
+    return "tools" if getattr(last, "tool_calls", None) else "writer"
+
+#Define synthesizer
+def writer_node(state: AgentState) -> dict:
+    notes = state.get("notes") or "(no research was performed)"
+    formatted_prompt = WRITER_PROMPT.invoke({"notes": notes})
+    reporter_response = llm.invoke(formatted_prompt)
+    return {"answer": reporter_response.content}
+
+def agent_graph():
+    builder = StateGraph(AgentState)
+    builder.add_node("planner", planner_node)
+    builder.add_node("researcher", researcher_node)
+    builder.add_node("tools", ToolNode(TOOLS, messages_key="research_messages"))
+    builder.add_node("writer", writer_node)
+    
+    builder.add_edge(START, "planner")
+    builder.add_conditional_edges("planner", route_after_plan)
+    builder.add_conditional_edges("researcher", route_after_research)
+    builder.add_edge("tools", "researcher")
+    builder.add_edge("writer", END)
+    
+    graph = builder.compile()
+    return graph
+
 
 def main() -> None :
     question = " ".join(sys.argv[1:]) or input("Question: ").strip()
     logger.info("Agent is searching for answers ...")
-    debug_input = AgentState(question=question)
     
-    debug_result = planner_node(debug_input)
-    logger.info(debug_result)
 
-    
+
+    #Debug
+    graph = agent_graph()
+    chunks = graph.stream(
+            {"question": question},
+            config={"recursion_limit": 25},
+            stream_mode="updates",
+        )
+    for chunk in chunks :
+        for node, update in chunk.items():
+            if node == "planner":
+                logger.info("Planning ...")
+                if update["needs_research"]:
+                    logger.info(f"Deep research mode activated : Sending plan to the agent: {update['sub_questions']}")
+                else:
+                    logger.info(f"No Deep research mode needed")
+            elif node == "researcher":
+                last = update["research_messages"][-1]
+                logger.debug(last)
+            elif node == "writer":
+                logger.info(f"Final report : \n{update['answer']}\n")
+               
 if __name__ == "__main__":
     main()
