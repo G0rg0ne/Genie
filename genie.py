@@ -169,9 +169,12 @@ def main() -> None :
                     logger.info(f"No Deep research mode needed")
             elif node == "researcher":
                 last = update["research_messages"][-1]
-                logger.debug(last)
+                for call in getattr(last, "tool_calls", []) or []:
+                    logger.info(f"  [tool calling] {call['args']['query']}")
             elif node == "writer":
-                logger.info(f"Final report : \n{update['answer']}\n")
+                logger.debug(update["answer"])
+                final_answer = update["answer"][-1]["text"]
+                logger.info(f"Final report:\n{final_answer}")
                
 if __name__ == "__main__":
     main()
