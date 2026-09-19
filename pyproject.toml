@@ -8,4 +8,5 @@ dependencies = [
     "langgraph",
     "loguru",
     "python-dotenv",
+    "langchain_tavily",
 ]
