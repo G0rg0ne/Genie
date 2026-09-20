@@ -18,9 +18,8 @@ services:
     environment:
       HOST: 0.0.0.0
       MONGO_URI: mongodb://librechat-mongo:27017/LibreChat
-      # MEILI_HOST: http://librechat-meili:7700   # only if you add meilisearch
     ports:
-      - "3080:3080"        # drop this if you front it with a reverse proxy
+      - "3080:3080"
     volumes:
       - ./librechat/librechat.yaml:/app/librechat.yaml
       - ./librechat/images:/app/client/public/images
@@ -32,7 +31,8 @@ services:
     restart: unless-stopped
     command: mongod --noauth
     volumes:
-      - librechat-mongo-data:/data/db
+      - ./mongo-data:/data/db
+      
 
 volumes:
   librechat-mongo-data:
