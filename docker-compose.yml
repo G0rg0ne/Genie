@@ -6,6 +6,8 @@ services:
     container_name: agent_api
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
   librechat:
@@ -31,7 +33,7 @@ services:
     restart: unless-stopped
     command: mongod --noauth
     volumes:
-      - ./mongo-data:/data/db
+      - librechat-mongo-data:/data/db
       
 
 volumes:

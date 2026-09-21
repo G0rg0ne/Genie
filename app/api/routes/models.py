@@ -1,7 +1,6 @@
 from fastapi import APIRouter
 from core.config import Settings
 from schemas.models import ModelsReponse
-import os 
 
 
 router = APIRouter()
