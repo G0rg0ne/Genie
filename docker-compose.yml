@@ -1,0 +1,40 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile-api
+    container_name: agent_api
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+  librechat:
+    image: ghcr.io/danny-avila/librechat-dev:latest
+    restart: unless-stopped
+    depends_on:
+      - librechat-mongo
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      MONGO_URI: mongodb://librechat-mongo:27017/LibreChat
+    ports:
+      - "3080:3080"
+    volumes:
+      - ./librechat/librechat.yaml:/app/librechat.yaml
+      - ./librechat/images:/app/client/public/images
+      - ./librechat/uploads:/app/uploads
+      - ./librechat/logs:/app/api/logs
+
+  librechat-mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: mongod --noauth
+    volumes:
+      - librechat-mongo-data:/data/db
+      
+
+volumes:
+  librechat-mongo-data:

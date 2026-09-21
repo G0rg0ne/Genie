@@ -1,0 +1,11 @@
+version: 1.2.1 
+endpoints:
+  custom:
+    - name: "genie-agent"
+      apiKey: "dummy-key"
+      baseURL: "http://host.docker.internal:8000/v1"
+      models:
+        default: ["Genie"]
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: "Genie"

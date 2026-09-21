@@ -1,0 +1,16 @@
+[project]
+name = "genie"
+version = "0.1.0"
+description = "Deep search agent"
+requires-python = ">=3.12"
+
+dependencies = [
+    "langchain-openai",
+    "langgraph",
+    "loguru",
+    "python-dotenv",
+    "langchain-tavily",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+]
