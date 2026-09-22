@@ -12,7 +12,7 @@ from utils.logger import setup_logging
 
 setup_logging()
 
-ANSWER_NODE = "writer"          # the node that writes state.answer
+ANSWER_NODE = "writer"
 DEFAULT_MODEL = "Genie"
 
 graph = agent_graph()
@@ -67,6 +67,7 @@ def build_inputs(messages: list[dict]) -> dict:
 
 @router.post("/v1/chat/completions")
 async def completions(req: Request):
+    logger.info("Request received ...")
     body = await req.json()
     model = body.get("model") or DEFAULT_MODEL
     cid = f"chatcmpl-{uuid.uuid4().hex}"
