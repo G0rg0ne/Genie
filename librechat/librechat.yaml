@@ -9,3 +9,7 @@ endpoints:
         fetch: false
       titleConvo: false
       modelDisplayLabel: "Genie"
+      customParams:
+        reasoningFormat: reasoning_object
+        reasoningKey: reasoning_content
+        includeReasoningContent: true
