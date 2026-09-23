@@ -55,3 +55,9 @@ def build_inputs(messages: list[dict]) -> dict:
         if m.get("role") in ("user", "assistant")
     ]
     return {"question": question, "chat_history": history}
+
+def short(text: str, n: int = 60) -> str:
+    return text if len(text) <= n else text[:n].rstrip() + "…"
+
+def emit_status(writer, text: str) -> None:
+    writer({"status": f"- {text}\n"})

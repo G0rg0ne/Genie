@@ -12,7 +12,7 @@ from langchain_tavily import TavilySearch
 from schemas.agent import AgentState,Plan
 from core.config import Settings
 from langgraph.config import get_stream_writer
-from utils.sse import extract_text
+from utils.sse import extract_text, short, emit_status
 from utils.logger import setup_logging
 
 setup_logging()
@@ -48,7 +48,7 @@ WRITER_PROMPT = client.pull_prompt("writer-synth-prompt")
 
 def planner_node(state: AgentState) -> dict:
     status = get_stream_writer()
-    status({"status": "🧭 Planning the approach..."})
+    emit_status(status, "🧭 Planning the approach...")
     formatted_prompt = PLANNER_PROMPT.invoke({
         "date": date.today().isoformat(),
         "chat_history": state.chat_history,
@@ -68,7 +68,6 @@ def route_after_plan(state: AgentState) -> Literal["researcher", "writer"]:
 def researcher_node(state: AgentState) -> dict:
     MAX_SEARCHES = 4
     status = get_stream_writer()
-    status({"status": "🔍 Search step ..."})
 
     history = state.research_messages
     seed = []
@@ -83,7 +82,6 @@ def researcher_node(state: AgentState) -> dict:
 
     convo = [*history, *seed]
     used = sum(1 for m in convo if isinstance(m, AIMessage) and m.tool_calls)
-    status({"status": f"🔍 Executing search query ... ({used + 1}/{MAX_SEARCHES})"})
     model = (
         llm.bind_tools(TOOLS, parallel_tool_calls=False)
         if used < MAX_SEARCHES
@@ -94,10 +92,10 @@ def researcher_node(state: AgentState) -> dict:
 
     if reply.tool_calls:
         query = reply.tool_calls[0]["args"].get("query", "")
-        status({"status": f"🔎 Looking up: {query}" if query else "Calling tool..."})
+        emit_status(status, f"🔍 Search {used+1}/{MAX_SEARCHES}: {short(query)}")
 
     else:
-        status({"status": "Synthesizing findings..."})
+        emit_status(status, "Synthesizing findings...")
         out["notes"] = extract_text(reply.content)
 
     return out
@@ -108,6 +106,8 @@ def route_after_research(state: AgentState) -> Literal["tools", "writer"]:
 
 #Define synthesizer
 def writer_node(state: AgentState) -> dict:
+    status = get_stream_writer()
+    emit_status(status, "✍️ Writing the answer...")
     notes = state.notes or "(no research was performed)"
     formatted_prompt = WRITER_PROMPT.invoke({"notes": notes,"question":state.question})
     reporter_response = llm.invoke(formatted_prompt)
