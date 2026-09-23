@@ -10,6 +10,17 @@ services:
       - "host.docker.internal:host-gateway"
     env_file:
       - .env
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile-mcp
+    container_name: mcp_server
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   librechat:
     image: ghcr.io/danny-avila/librechat-dev:latest
     restart: unless-stopped
@@ -34,7 +45,6 @@ services:
     command: mongod --noauth
     volumes:
       - librechat-mongo-data:/data/db
-      
 
 volumes:
   librechat-mongo-data:
