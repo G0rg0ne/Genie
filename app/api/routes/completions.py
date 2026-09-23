@@ -8,13 +8,16 @@ from langchain_core.messages import AIMessageChunk
 from loguru import logger
 
 from agents.genie_graph import agent_graph
+from schemas.title import TitleOutput
 from utils.logger import setup_logging
 from utils.sse import extract_text, chunk, reasoning_chunk, build_inputs, base_chunk
+from agents.genie_graph import llm
 
 setup_logging()
 
 ANSWER_NODE = "writer"
 DEFAULT_MODEL = "Genie"
+TITLE_MARKER = "TITLE_REQUEST::"
 
 graph = agent_graph()
 router = APIRouter()
@@ -25,6 +28,25 @@ async def completions(req: Request):
     body = await req.json()
     model = body.get("model") or DEFAULT_MODEL
     cid = f"chatcmpl-{uuid.uuid4().hex}"
+    messages = body.get("messages", [])
+    last_content = messages[-1]["content"] if messages else ""
+
+    if not body.get("stream") and isinstance(last_content, str) and last_content.startswith(TITLE_MARKER):
+        question = last_content[len(TITLE_MARKER):].strip()
+        title_result = llm.with_structured_output(TitleOutput).invoke(
+            f"Summarize this question into a short, 3-6 word conversation title:\n\n{question}"
+        )
+        return JSONResponse({
+            "id": cid,
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": title_result.title},
+            }],
+        })
 
     try:
         inputs = build_inputs(body.get("messages", []))
