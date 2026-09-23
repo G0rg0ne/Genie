@@ -1,4 +1,3 @@
-from utils.logger import setup_logging
 from loguru import logger
 from datetime import date
 from typing import Literal
@@ -9,16 +8,20 @@ from langchain_core.messages import AIMessage
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
 from langchain_tavily import TavilySearch
+
 from schemas.agent import AgentState,Plan
 from core.config import Settings
+from langgraph.config import get_stream_writer
+from utils.sse import extract_text, short, emit_status
+from utils.logger import setup_logging
 
 setup_logging()
 settings = Settings()
 _tavily = TavilySearch(
     max_results=1,
     topic="general",
-    search_depth="basic",   # "advanced" costs more credits, better recall
-    include_answer=False,   # let *your* model synthesize, not Tavily's
+    search_depth="basic",
+    include_answer=False,
 )
 
 @tool(description="Search the web for current information. Use a focused, specific query.")
@@ -40,10 +43,12 @@ TOOLS = [web_search]
 llm =  ChatOpenAI(model=settings.model_name,use_responses_api=True)
 client = Client()
 PLANNER_PROMPT = client.pull_prompt("planner-prompt")
-RESEARCHER_PROMPT = client.pull_prompt("researcher-1")
-WRITER_PROMPT = client.pull_prompt("reporter-writer")
+RESEARCHER_PROMPT = client.pull_prompt("researcher-prompt")
+WRITER_PROMPT = client.pull_prompt("writer-synth-prompt")
 
 def planner_node(state: AgentState) -> dict:
+    status = get_stream_writer()
+    emit_status(status, "🧭 Planning the approach...")
     formatted_prompt = PLANNER_PROMPT.invoke({
         "date": date.today().isoformat(),
         "chat_history": state.chat_history,
@@ -62,7 +67,9 @@ def route_after_plan(state: AgentState) -> Literal["researcher", "writer"]:
 #Define researcher
 def researcher_node(state: AgentState) -> dict:
     MAX_SEARCHES = 4
-    history = state.research_messages          # defaults to [] in AgentState, no .get() needed
+    status = get_stream_writer()
+
+    history = state.research_messages
     seed = []
     if not history:
         bullets = "\n".join(f"- {q}" for q in state.sub_questions)
@@ -72,9 +79,9 @@ def researcher_node(state: AgentState) -> dict:
             "question": state.question,
             "bullets": bullets,
         }).to_messages()
+
     convo = [*history, *seed]
     used = sum(1 for m in convo if isinstance(m, AIMessage) and m.tool_calls)
-
     model = (
         llm.bind_tools(TOOLS, parallel_tool_calls=False)
         if used < MAX_SEARCHES
@@ -83,8 +90,14 @@ def researcher_node(state: AgentState) -> dict:
     reply = model.invoke(convo)
     out: dict = {"research_messages": [*seed, reply]}
 
-    if not reply.tool_calls:
-        out["notes"] = reply.text
+    if reply.tool_calls:
+        query = reply.tool_calls[0]["args"].get("query", "")
+        emit_status(status, f"🔍 Search {used+1}/{MAX_SEARCHES}: {short(query)}")
+
+    else:
+        emit_status(status, "Synthesizing findings...")
+        out["notes"] = extract_text(reply.content)
+
     return out
 
 def route_after_research(state: AgentState) -> Literal["tools", "writer"]:
@@ -93,8 +106,10 @@ def route_after_research(state: AgentState) -> Literal["tools", "writer"]:
 
 #Define synthesizer
 def writer_node(state: AgentState) -> dict:
+    status = get_stream_writer()
+    emit_status(status, "✍️ Writing the answer...")
     notes = state.notes or "(no research was performed)"
-    formatted_prompt = WRITER_PROMPT.invoke({"notes": notes})
+    formatted_prompt = WRITER_PROMPT.invoke({"notes": notes,"question":state.question})
     reporter_response = llm.invoke(formatted_prompt)
     return {"answer": reporter_response.text}
 

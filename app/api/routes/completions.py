@@ -8,68 +8,45 @@ from langchain_core.messages import AIMessageChunk
 from loguru import logger
 
 from agents.genie_graph import agent_graph
+from schemas.title import TitleOutput
 from utils.logger import setup_logging
+from utils.sse import extract_text, chunk, reasoning_chunk, build_inputs, base_chunk
+from agents.genie_graph import llm
 
 setup_logging()
 
-ANSWER_NODE = "writer"          # the node that writes state.answer
+ANSWER_NODE = "writer"
 DEFAULT_MODEL = "Genie"
+TITLE_MARKER = "TITLE_REQUEST::"
 
 graph = agent_graph()
 router = APIRouter()
 
-
-def extract_text(content) -> str:
-    """Return plain text from a message's content.
-
-    Handles a plain string, or a list of content blocks: LibreChat's multimodal parts
-    on the way in, and Responses API blocks (text + reasoning) on the way out.
-    Only blocks of type "text" are kept, so reasoning blocks never leak.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return ""
-
-
-def chunk(cid: str, model: str, content: str | None = None, finish: str | None = None) -> str:
-    """Format one OpenAI-style SSE chunk."""
-    delta = {"content": content} if content is not None else {}
-    return "data: " + json.dumps({
-        "id": cid,
-        "object": "chat.completion.chunk",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-    }) + "\n\n"
-
-
-def build_inputs(messages: list[dict]) -> dict:
-    """Split LibreChat's messages into the latest question and the previous turns."""
-    user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
-    if not user_indices:
-        raise ValueError("No user message found in the request")
-    last_user_idx = user_indices[-1]
-
-    question = extract_text(messages[last_user_idx].get("content"))
-    history = [
-        {"role": m["role"], "content": extract_text(m.get("content"))}
-        for m in messages[:last_user_idx]
-        if m.get("role") in ("user", "assistant")  # system prompt dropped on purpose
-    ]
-    return {"question": question, "chat_history": history}  # add_messages converts the dicts
-
-
 @router.post("/v1/chat/completions")
 async def completions(req: Request):
+    logger.info("Request received ...")
     body = await req.json()
     model = body.get("model") or DEFAULT_MODEL
     cid = f"chatcmpl-{uuid.uuid4().hex}"
+    messages = body.get("messages", [])
+    last_content = messages[-1]["content"] if messages else ""
+
+    if not body.get("stream") and isinstance(last_content, str) and last_content.startswith(TITLE_MARKER):
+        question = last_content[len(TITLE_MARKER):].strip()
+        title_result = llm.with_structured_output(TitleOutput).invoke(
+            f"Summarize this question into a short, 3-6 word conversation title:\n\n{question}"
+        )
+        return JSONResponse({
+            "id": cid,
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": title_result.title},
+            }],
+        })
 
     try:
         inputs = build_inputs(body.get("messages", []))
@@ -100,18 +77,42 @@ async def completions(req: Request):
 
     # ---------- streaming ----------
     async def gen():
-        try:
-            async for msg, meta in graph.astream(inputs, stream_mode="messages"):
-                if isinstance(msg, AIMessageChunk) and meta.get("langgraph_node") == ANSWER_NODE:
-                    text = extract_text(msg.content)
-                    if text:  # skips reasoning blocks and empty chunks
-                        yield chunk(cid, model, text)
-        except Exception as exc:
-            # headers are already sent, so surface the error in the chat instead of failing silently
-            logger.exception(f"[{cid}] Graph failed during streaming")
-            yield chunk(cid, model, f"⚠️ Agent error: {type(exc).__name__}: {exc}")
+        created = int(time.time())
 
-        yield chunk(cid, model, finish="stop")
+        # 1. Initiating role chunk — establishes the message before any content/reasoning arrives
+        opener = base_chunk(cid, model, created)
+        opener["choices"][0]["delta"] = {"role": "assistant", "content": ""}
+        yield f"data: {json.dumps(opener)}\n\n"
+
+        try:
+            async for stream_type, payload in graph.astream(inputs, stream_mode=["custom", "messages"]):
+                if stream_type == "custom":
+                    evt = base_chunk(cid, model, created)
+                    evt["choices"][0]["delta"] = {"reasoning_content": payload["status"] + "\n"}
+                    yield f"data: {json.dumps(evt)}\n\n"
+
+                elif stream_type == "messages":
+                    msg, meta = payload
+                    if isinstance(msg, AIMessageChunk) and meta.get("langgraph_node") == ANSWER_NODE:
+                        text = extract_text(msg.content)
+                        if text:
+                            evt = base_chunk(cid, model, created)
+                            evt["choices"][0]["delta"] = {"content": text}
+                            yield f"data: {json.dumps(evt)}\n\n"
+
+        except Exception as exc:
+            logger.exception(f"[{cid}] Graph failed during streaming")
+            evt = base_chunk(cid, model, created)
+            evt["choices"][0]["delta"] = {"content": f"⚠️ Agent error: {type(exc).__name__}: {exc}"}
+            yield f"data: {json.dumps(evt)}\n\n"
+
+        final = base_chunk(cid, model, created)
+        final["choices"][0]["finish_reason"] = "stop"
+        yield f"data: {json.dumps(final)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
