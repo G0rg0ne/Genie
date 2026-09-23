@@ -26,7 +26,7 @@ services:
       - ./librechat/librechat.yaml:/app/librechat.yaml
       - ./librechat/images:/app/client/public/images
       - ./librechat/uploads:/app/uploads
-      - ./librechat/logs:/app/api/logs
+      - ./librechat/logs:/app/api/logs 
 
   librechat-mongo:
     image: mongo:7

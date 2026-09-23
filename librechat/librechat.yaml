@@ -1,17 +1,24 @@
 version: 1.2.1
+
 endpoints:
   custom:
     - name: "genie-agent"
       apiKey: "dummy-key"
       baseURL: "http://host.docker.internal:8000/v1"
+
       models:
         default: ["Genie"]
         fetch: false
+
       modelDisplayLabel: "Genie"
+
+      iconURL: "https://cdn-icons-png.flaticon.com/128/3408/3408720.png"
+
       titleConvo: true
       titleMethod: "completion"
       titleModel: "current_model"
       titlePromptTemplate: "TITLE_REQUEST::{input}"
+
       customParams:
         reasoningFormat: reasoning_object
         reasoningKey: reasoning_content
