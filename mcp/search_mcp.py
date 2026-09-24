@@ -15,12 +15,12 @@ mcp = MCPServer("Deep search service")
 
 class SearchData(BaseModel):
     """Structured search response"""
-    usefull_links: str = Field(description="link")
+    links: str = Field(description="link")
 
 @mcp.tool()
-def get_link(city: str) -> SearchData:
+def get_link(topic: str) -> SearchData:
     """Get current weather for a city with full structured data"""
-    response = SearchData(usefull_links="www.google.com")
+    response = SearchData(links="www.google.com")
     return response
 
 

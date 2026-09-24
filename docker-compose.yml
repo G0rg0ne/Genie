@@ -13,6 +13,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile-mcp
+    ports:
+      - "8080:8080"
     container_name: mcp_server
 
   librechat:

@@ -1,9 +1,10 @@
-# app/core/mcp_client.py
+
 from contextlib import asynccontextmanager
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from langchain_mcp_adapters.tools import load_mcp_tools
 
-MCP_URL = "http://mcp:8080/mcp"  # "mcp" = the Compose service name for Dockerfile-mcp
+MCP_URL = "http://mcp:8080/mcp"
 
 @asynccontextmanager
 async def get_mcp_session():
