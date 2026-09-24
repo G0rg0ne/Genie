@@ -11,7 +11,8 @@ dependencies = [
     "pydantic>=2.0.0",
     "mcp>=1.0.0",
     "starlette",
-    "uvicorn"
+    "uvicorn",
+    "firecrawl-py",
 ]
 [tool.hatch.build.targets.wheel]
 # If your code is in folders:

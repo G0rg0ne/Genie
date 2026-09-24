@@ -12,3 +12,4 @@ __pycache__/
 *.pyzwz
 *.pyzwzw
 mongo-data/*
+**.env
