@@ -6,8 +6,6 @@ services:
     container_name: agent_api
     ports:
       - "8000:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     env_file:
       - .env
 
@@ -16,10 +14,6 @@ services:
       context: .
       dockerfile: Dockerfile-mcp
     container_name: mcp_server
-    ports:
-      - "8080:8080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   librechat:
     image: ghcr.io/danny-avila/librechat-dev:latest

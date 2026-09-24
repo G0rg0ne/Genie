@@ -17,4 +17,4 @@ COPY utils/ ./utils/
 RUN uv sync --locked
 
 EXPOSE 8080
-CMD ["uv", "run", "python", "-u", "binoculars.py"]
+CMD ["uv", "run", "python", "-u", "search_mcp.py"]
