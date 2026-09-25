@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+# uv configuration
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_DEV=1 \
+    PYTHONUNBUFFERED=1
+
+# Copy application
+COPY mcp/ .
+COPY utils/ ./utils/
+RUN uv sync --locked
+
+EXPOSE 8080
+CMD ["uv", "run", "python", "-u", "search_mcp.py"]

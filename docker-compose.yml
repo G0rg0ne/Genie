@@ -6,10 +6,19 @@ services:
     container_name: agent_api
     ports:
       - "8000:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     env_file:
       - .env
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile-mcp
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./mcp/.mcp.env
+    container_name: mcp_server
+
   librechat:
     image: ghcr.io/danny-avila/librechat-dev:latest
     restart: unless-stopped
@@ -34,7 +43,6 @@ services:
     command: mongod --noauth
     volumes:
       - librechat-mongo-data:/data/db
-      
 
 volumes:
   librechat-mongo-data:

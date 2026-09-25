@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deep-search-service"
+version = "0.1.0"
+description = "Deep search service using MCP"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "mcp>=2",
+    "starlette",
+    "loguru",
+    "uvicorn",
+    "firecrawl-py",
+]
+[tool.hatch.build.targets.wheel]
+# If your code is in folders:
+packages = ["utils"] 
+
+# OR, if your code is just a single Python file (e.g., main.py):
+# py-modules = ["binoculars"]

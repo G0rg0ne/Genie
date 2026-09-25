@@ -4,7 +4,7 @@ endpoints:
   custom:
     - name: "genie-agent"
       apiKey: "dummy-key"
-      baseURL: "http://host.docker.internal:8000/v1"
+      baseURL: "http://api:8000/v1"
 
       models:
         default: ["Genie"]

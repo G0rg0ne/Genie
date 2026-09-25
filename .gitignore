@@ -1,4 +1,4 @@
-README.md
+
 .env
 .venv/
 __pycache__/
@@ -12,3 +12,4 @@ __pycache__/
 *.pyzwz
 *.pyzwzw
 mongo-data/*
+**.env
