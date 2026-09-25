@@ -9,8 +9,9 @@ description = "Deep search service using MCP"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.0.0",
-    "mcp>=1.0.0",
+    "mcp>=2",
     "starlette",
+    "loguru",
     "uvicorn",
     "firecrawl-py",
 ]

@@ -8,15 +8,19 @@ from langchain_core.messages import AIMessage
 from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
 from langchain_tavily import TavilySearch
-
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from schemas.agent import AgentState,Plan
 from core.config import Settings
 from langgraph.config import get_stream_writer
 from utils.sse import extract_text, short, emit_status
 from utils.logger import setup_logging
+from functools import partial
 
 setup_logging()
 settings = Settings()
+
+
+#Default agent's tools
 _tavily = TavilySearch(
     max_results=1,
     topic="general",
@@ -37,7 +41,22 @@ def web_search(query:str)->str:
     final_results = "\n\n".join(chunks) if chunks else "No results found."
     return final_results
 
-TOOLS = [web_search]
+#MCP tools
+_mcp_client = MultiServerMCPClient(
+    {
+        "deep_search": {
+            "transport": "streamable_http",
+            "url": settings.mcp_server_url,
+        },
+    }
+)
+_mcp_tools_cache: list | None = None
+async def get_tools() -> list:
+    """Returns the full tool list, lazily fetching MCP tools once and caching them."""
+    global _mcp_tools_cache
+    if _mcp_tools_cache is None:
+        _mcp_tools_cache = await _mcp_client.get_tools()
+    return [web_search, *_mcp_tools_cache]
 
 # Define LLM call
 llm =  ChatOpenAI(model=settings.model_name,use_responses_api=True)
@@ -65,10 +84,9 @@ def route_after_plan(state: AgentState) -> Literal["researcher", "writer"]:
     return "researcher" if state.needs_research else "writer"
 
 #Define researcher
-def researcher_node(state: AgentState) -> dict:
-    MAX_SEARCHES = 4
+async def researcher_node(state: AgentState, tools: list) -> dict:
+    MAX_SEARCHES = 6
     status = get_stream_writer()
-
     history = state.research_messages
     seed = []
     if not history:
@@ -79,11 +97,10 @@ def researcher_node(state: AgentState) -> dict:
             "question": state.question,
             "bullets": bullets,
         }).to_messages()
-
     convo = [*history, *seed]
     used = sum(1 for m in convo if isinstance(m, AIMessage) and m.tool_calls)
     model = (
-        llm.bind_tools(TOOLS, parallel_tool_calls=False)
+        llm.bind_tools(tools, parallel_tool_calls=False)
         if used < MAX_SEARCHES
         else llm
     )
@@ -91,9 +108,18 @@ def researcher_node(state: AgentState) -> dict:
     out: dict = {"research_messages": [*seed, reply]}
 
     if reply.tool_calls:
-        query = reply.tool_calls[0]["args"].get("query", "")
-        emit_status(status, f"🔍 Search {used+1}/{MAX_SEARCHES}: {short(query)}")
+        call = reply.tool_calls[0]
+        tool_name = call["name"]
+        args = call["args"]
 
+        if tool_name == "web_search":
+            label = f"🔍 Search {used+1}/{MAX_SEARCHES}: {short(args.get('query', ''))}"
+        elif tool_name == "scrape_link":
+            label = f"📄 Reading {short(args.get('link', ''))}"
+        else:
+            label = f"🔧 Calling {tool_name}..."
+
+        emit_status(status, label)
     else:
         emit_status(status, "Synthesizing findings...")
         out["notes"] = extract_text(reply.content)
@@ -113,18 +139,33 @@ def writer_node(state: AgentState) -> dict:
     reporter_response = llm.invoke(formatted_prompt)
     return {"answer": reporter_response.text}
 
-def agent_graph():
+async def build_agent_graph():
+    mcp_client = MultiServerMCPClient(
+        {
+            "deep_search": {
+                "transport": "streamable_http",
+                "url": settings.mcp_server_url,
+            },
+        }
+    )
+    mcp_tools = await mcp_client.get_tools()
+    tools = [web_search, *mcp_tools]
+
+    def make_researcher_node(tools: list):
+        async def _researcher_node(state: AgentState) -> dict:
+            return await researcher_node(state, tools)
+        return _researcher_node
+
     builder = StateGraph(AgentState)
     builder.add_node("planner", planner_node)
-    builder.add_node("researcher", researcher_node)
-    builder.add_node("tools", ToolNode(TOOLS, messages_key="research_messages"))
+    builder.add_node("researcher", make_researcher_node(tools))
+    builder.add_node("tools", ToolNode(tools, messages_key="research_messages"))
     builder.add_node("writer", writer_node)
-    
+
     builder.add_edge(START, "planner")
     builder.add_conditional_edges("planner", route_after_plan)
     builder.add_conditional_edges("researcher", route_after_research)
     builder.add_edge("tools", "researcher")
     builder.add_edge("writer", END)
-    
-    graph = builder.compile()
-    return graph
+
+    return builder.compile()

@@ -7,7 +7,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import AIMessageChunk
 from loguru import logger
 
-from agents.genie_graph import agent_graph
 from schemas.title import TitleOutput
 from utils.logger import setup_logging
 from utils.sse import extract_text, chunk, reasoning_chunk, build_inputs, base_chunk
@@ -19,12 +18,14 @@ ANSWER_NODE = "writer"
 DEFAULT_MODEL = "Genie"
 TITLE_MARKER = "TITLE_REQUEST::"
 
-graph = agent_graph()
 router = APIRouter()
 
 @router.post("/v1/chat/completions")
 async def completions(req: Request):
     logger.info("Request received ...")
+
+    graph = req.app.state.graph
+
     body = await req.json()
     model = body.get("model") or DEFAULT_MODEL
     cid = f"chatcmpl-{uuid.uuid4().hex}"
@@ -79,7 +80,6 @@ async def completions(req: Request):
     async def gen():
         created = int(time.time())
 
-        # 1. Initiating role chunk — establishes the message before any content/reasoning arrives
         opener = base_chunk(cid, model, created)
         opener["choices"][0]["delta"] = {"role": "assistant", "content": ""}
         yield f"data: {json.dumps(opener)}\n\n"
