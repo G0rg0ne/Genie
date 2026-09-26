@@ -1,10 +1,9 @@
-name: Build and Publish
+name: Build, Scan, Publish, and Deploy
 
 on:
   push:
     tags:
       - "v*"
-
   workflow_dispatch:
 
 env:
@@ -15,7 +14,7 @@ permissions:
   packages: write
 
 jobs:
-  build-and-push:
+  build-scan-push:
     runs-on: ubuntu-latest
 
     strategy:
@@ -23,17 +22,32 @@ jobs:
         include:
           - name: genie-api
             dockerfile: Dockerfile-api
-
           - name: genie-mcp
             dockerfile: Dockerfile-mcp
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # ---------------------------------------------------------
+      # 1. Scan repository for leaked secrets
+      # ---------------------------------------------------------
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---------------------------------------------------------
+      # 2. Set up Docker
+      # ---------------------------------------------------------
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # ---------------------------------------------------------
+      # 3. Log in to GHCR
+      # ---------------------------------------------------------
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -41,21 +55,103 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # ---------------------------------------------------------
+      # 4. Generate image metadata
+      # ---------------------------------------------------------
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}
           tags: |
             type=raw,value=${{ github.ref_name }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
+      # ---------------------------------------------------------
+      # 5. Build image locally
+      #
+      # load: true makes the image available to Docker locally
+      # so Trivy can scan the exact image before publishing it.
+      # ---------------------------------------------------------
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          load: true
+          tags: |
+            ${{ matrix.name }}:${{ github.ref_name }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # ---------------------------------------------------------
+      # 6. Scan image for vulnerabilities + secrets
+      #
+      # The workflow FAILS if HIGH or CRITICAL findings exist.
+      # ---------------------------------------------------------
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ matrix.name }}:${{ github.ref_name }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          ignore-unfixed: true
+
+      # ---------------------------------------------------------
+      # 7. Tag scanned image for GHCR
+      # ---------------------------------------------------------
+      - name: Tag image for GHCR
+        run: |
+          docker tag \
+            "${{ matrix.name }}:${{ github.ref_name }}" \
+            "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}:${{ github.ref_name }}"
+
+      # ---------------------------------------------------------
+      # 8. Push ONLY after the security scan passes
+      # ---------------------------------------------------------
+      - name: Push image to GHCR
+        run: |
+          docker push \
+            "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}:${{ github.ref_name }}"
+
+  # -----------------------------------------------------------
+  # Update GitOps repository only after BOTH images pass scans
+  # -----------------------------------------------------------
+  update-gitops:
+    needs: build-scan-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: <you>/<gitops-repo>
+          token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+          path: gitops-repo
+
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update image tags
+        working-directory: gitops-repo/gitops/genie-stack
+        run: |
+          kustomize edit set image \
+            genie-api=ghcr.io/${{ github.repository_owner }}/genie-api:${{ github.ref_name }} \
+            genie-mcp=ghcr.io/${{ github.repository_owner }}/genie-mcp:${{ github.ref_name }}
+
+      - name: Commit and push
+        working-directory: gitops-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add gitops/genie-stack/kustomization.yaml
+
+          git diff --cached --quiet && echo "No changes" && exit 0
+
+          git commit \
+            -m "genie-stack: bump images to ${{ github.ref_name }}"
+
+          git push
