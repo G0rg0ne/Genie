@@ -14,7 +14,6 @@ from core.config import Settings
 from langgraph.config import get_stream_writer
 from utils.sse import extract_text, short, emit_status
 from utils.logger import setup_logging
-from functools import partial
 
 setup_logging()
 settings = Settings()
