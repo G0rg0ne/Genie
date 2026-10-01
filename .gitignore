@@ -13,3 +13,6 @@ __pycache__/
 *.pyzwzw
 mongo-data/*
 **.env
+/tests/*
+/DEVELOPMENT.md
+pytest.ini

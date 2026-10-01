@@ -1,19 +1,21 @@
-from loguru import logger
+import json
 from datetime import date
-from typing import Literal
-from langsmith import Client
-from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, START, END
+from typing import Any, Literal
+
 from langchain_core.messages import AIMessage
-from langgraph.prebuilt import ToolNode
 from langchain_core.tools import tool
-from langchain_tavily import TavilySearch
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from schemas.agent import AgentState,Plan
-from core.config import Settings
+from langchain_openai import ChatOpenAI
+from langchain_tavily import TavilySearch
 from langgraph.config import get_stream_writer
-from utils.sse import extract_text, short, emit_status
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
+
+from core.config import Settings
+from core.langfuse_client import PromptBundle
+from schemas.agent import AgentState, Plan
 from utils.logger import setup_logging
+from utils.sse import emit_status, extract_text, short
 
 setup_logging()
 settings = Settings()
@@ -27,18 +29,43 @@ _tavily = TavilySearch(
     include_answer=False,
 )
 
+def _normalize_tavily_response(raw: Any) -> dict[str, Any] | str:
+    """Tavily may return a dict, a JSON string, or a plain error string."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+        if isinstance(parsed, dict):
+            return parsed
+        return raw
+    return f"Unexpected search response type: {type(raw).__name__}"
+
 @tool(description="Search the web for current information. Use a focused, specific query.")
 def web_search(query:str)->str:
-    try : 
+    try:
         raw_search_results = _tavily.invoke({"query": query})
-    except Exception as exc: 
+    except Exception as exc:
         return f"Search failed: {exc}"
-    chunks = [
-        f"[{r['url']}]\n{r['title']}\n{r['content']}"
-        for r in raw_search_results.get("results", [])
-    ]
-    final_results = "\n\n".join(chunks) if chunks else "No results found."
-    return final_results
+
+    normalized = _normalize_tavily_response(raw_search_results)
+    if isinstance(normalized, str):
+        return f"Search failed: {normalized}"
+
+    results = normalized.get("results") or []
+    if not isinstance(results, list):
+        return f"Search failed: unexpected results payload: {results!r}"
+
+    chunks = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        chunks.append(
+            f"[{r.get('url', '')}]\n{r.get('title', '')}\n{r.get('content', '')}"
+        )
+    return "\n\n".join(chunks) if chunks else "No results found."
 
 #MCP tools
 _mcp_client = MultiServerMCPClient(
@@ -58,87 +85,16 @@ async def get_tools() -> list:
     return [web_search, *_mcp_tools_cache]
 
 # Define LLM call
-llm =  ChatOpenAI(model=settings.model_name,use_responses_api=True)
-client = Client()
-PLANNER_PROMPT = client.pull_prompt("planner-prompt")
-RESEARCHER_PROMPT = client.pull_prompt("researcher-prompt")
-WRITER_PROMPT = client.pull_prompt("writer-synth-prompt")
-
-def planner_node(state: AgentState) -> dict:
-    status = get_stream_writer()
-    emit_status(status, "🧭 Planning the approach...")
-    formatted_prompt = PLANNER_PROMPT.invoke({
-        "date": date.today().isoformat(),
-        "chat_history": state.chat_history,
-        "question": state.question,
-    })
-    planer_response = llm.with_structured_output(Plan).invoke(formatted_prompt)
-
-    return {
-        "needs_research": planer_response.needs_research,
-        "sub_questions": planer_response.sub_questions,
-    }
+llm = ChatOpenAI(model=settings.model_name, use_responses_api=True)
 
 def route_after_plan(state: AgentState) -> Literal["researcher", "writer"]:
     return "researcher" if state.needs_research else "writer"
-
-#Define researcher
-async def researcher_node(state: AgentState, tools: list) -> dict:
-    MAX_SEARCHES = 6
-    status = get_stream_writer()
-    history = state.research_messages
-    seed = []
-    if not history:
-        bullets = "\n".join(f"- {q}" for q in state.sub_questions)
-        seed = RESEARCHER_PROMPT.invoke({
-            "date": date.today().isoformat(),
-            "MAX_SEARCHES": MAX_SEARCHES,
-            "question": state.question,
-            "bullets": bullets,
-        }).to_messages()
-    convo = [*history, *seed]
-    used = sum(1 for m in convo if isinstance(m, AIMessage) and m.tool_calls)
-    model = (
-        llm.bind_tools(tools, parallel_tool_calls=False)
-        if used < MAX_SEARCHES
-        else llm
-    )
-    reply = model.invoke(convo)
-    out: dict = {"research_messages": [*seed, reply]}
-
-    if reply.tool_calls:
-        call = reply.tool_calls[0]
-        tool_name = call["name"]
-        args = call["args"]
-
-        if tool_name == "web_search":
-            label = f"🔍 Search {used+1}/{MAX_SEARCHES}: {short(args.get('query', ''))}"
-        elif tool_name == "scrape_link":
-            label = f"📄 Reading {short(args.get('link', ''))}"
-        else:
-            label = f"🔧 Calling {tool_name}..."
-
-        emit_status(status, label)
-    else:
-        emit_status(status, "Synthesizing findings...")
-        out["notes"] = extract_text(reply.content)
-
-    return out
 
 def route_after_research(state: AgentState) -> Literal["tools", "writer"]:
     last = state.research_messages[-1]
     return "tools" if last.tool_calls else "writer"
 
-#Define synthesizer
-def writer_node(state: AgentState) -> dict:
-    status = get_stream_writer()
-    emit_status(status, "✍️ Writing the answer...")
-    notes = state.notes or "(no research was performed)"
-    formatted_prompt = WRITER_PROMPT.invoke({"notes": notes,"question":state.question})
-    reporter_response = llm.invoke(formatted_prompt)
-    return {"answer": reporter_response.text}
-
-async def build_agent_graph():
+async def build_agent_graph(prompts: PromptBundle):
     mcp_client = MultiServerMCPClient(
         {
             "deep_search": {
@@ -150,14 +106,77 @@ async def build_agent_graph():
     mcp_tools = await mcp_client.get_tools()
     tools = [web_search, *mcp_tools]
 
-    def make_researcher_node(tools: list):
-        async def _researcher_node(state: AgentState) -> dict:
-            return await researcher_node(state, tools)
-        return _researcher_node
+    def planner_node(state: AgentState) -> dict:
+        status = get_stream_writer()
+        emit_status(status, "🧭 Planning the approach...")
+        formatted_prompt = prompts.planner.invoke({
+            "date": date.today().isoformat(),
+            "chat_history": state.chat_history,
+            "question": state.question,
+        })
+        planer_response = llm.with_structured_output(Plan).invoke(formatted_prompt)
+
+        return {
+            "needs_research": planer_response.needs_research,
+            "sub_questions": planer_response.sub_questions,
+        }
+
+    async def researcher_node(state: AgentState) -> dict:
+        MAX_SEARCHES = 6
+        status = get_stream_writer()
+        history = state.research_messages
+        seed = []
+        if not history:
+            bullets = "\n".join(f"- {q}" for q in state.sub_questions)
+            seed = prompts.researcher.invoke({
+                "date": date.today().isoformat(),
+                "MAX_SEARCHES": MAX_SEARCHES,
+                "question": state.question,
+                "bullets": bullets,
+            }).to_messages()
+        convo = [*history, *seed]
+        used = sum(1 for m in convo if isinstance(m, AIMessage) and m.tool_calls)
+        model = (
+            llm.bind_tools(tools, parallel_tool_calls=False)
+            if used < MAX_SEARCHES
+            else llm
+        )
+        reply = model.invoke(convo)
+        out: dict = {"research_messages": [*seed, reply]}
+
+        if reply.tool_calls:
+            call = reply.tool_calls[0]
+            tool_name = call["name"]
+            args = call["args"]
+
+            if tool_name == "web_search":
+                label = f"🔍 Search {used+1}/{MAX_SEARCHES}: {short(args.get('query', ''))}"
+            elif tool_name == "scrape_link":
+                label = f"📄 Reading {short(args.get('link', ''))}"
+            else:
+                label = f"🔧 Calling {tool_name}..."
+
+            emit_status(status, label)
+        else:
+            emit_status(status, "Synthesizing findings...")
+            out["notes"] = extract_text(reply.content)
+
+        return out
+
+    def writer_node(state: AgentState) -> dict:
+        status = get_stream_writer()
+        emit_status(status, "✍️ Writing the answer...")
+        notes = state.notes or "(no research was performed)"
+        formatted_prompt = prompts.writer.invoke({
+            "notes": notes,
+            "question": state.question,
+        })
+        reporter_response = llm.invoke(formatted_prompt)
+        return {"answer": reporter_response.text}
 
     builder = StateGraph(AgentState)
     builder.add_node("planner", planner_node)
-    builder.add_node("researcher", make_researcher_node(tools))
+    builder.add_node("researcher", researcher_node)
     builder.add_node("tools", ToolNode(tools, messages_key="research_messages"))
     builder.add_node("writer", writer_node)
 
