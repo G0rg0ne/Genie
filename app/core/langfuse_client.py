@@ -35,13 +35,15 @@ class LangfusePromptError(RuntimeError):
 def init_langfuse(settings: Settings) -> Langfuse:
     """Initialize the Langfuse SDK against the configured self-hosted instance."""
     logger.info(
-        "Initializing Langfuse client base_url={}",
+        "Initializing Langfuse client base_url={} environment={}",
         settings.langfuse_base_url,
+        settings.langfuse_tracing_environment,
     )
     return Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
         base_url=settings.langfuse_base_url,
+        environment=settings.langfuse_tracing_environment,
     )
 
 

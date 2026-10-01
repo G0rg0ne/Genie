@@ -78,6 +78,7 @@ Genie/
    LANGFUSE_PUBLIC_KEY=pk-lf-...
    LANGFUSE_SECRET_KEY=sk-lf-...
    LANGFUSE_BASE_URL=https://langfuse.example.com
+   LANGFUSE_TRACING_ENVIRONMENT=live-prod
    ```
 
 3. Launch everything:
@@ -117,6 +118,7 @@ Documented fully in [`.env.example`](.env.example). Genie-specific variables:
 | `LANGFUSE_PUBLIC_KEY` | yes | Langfuse project public key |
 | `LANGFUSE_SECRET_KEY` | yes | Langfuse project secret key |
 | `LANGFUSE_BASE_URL` | yes | Self-hosted Langfuse API base URL |
+| `LANGFUSE_TRACING_ENVIRONMENT` | no | Langfuse environment on every trace (default `default`; e.g. `live-prod`). Lowercase letters, digits, `-`, `_`; must not start with `langfuse` |
 
 `LANGSMITH_API_KEY` is no longer used. LangSmith may still appear transitively via LangChain.
 
