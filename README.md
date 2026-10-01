@@ -167,7 +167,8 @@ docker compose down
 - Langfuse is **not** started by this Compose file; Genie talks to your existing self-hosted instance via `LANGFUSE_BASE_URL`.
 - The API container loads prompts during FastAPI startup. Missing credentials, unreachable Langfuse, or missing chat prompts cause startup to fail fast.
 - Trace export is best-effort and must not turn a successful completion into an API error; pending events are flushed on shutdown.
-- Rebuild/push images with the existing GitHub Actions workflow when cutting a release tag.
+- Rebuild/push images with the existing GitHub Actions workflow when cutting a release tag. The workflow fails the image on HIGH or CRITICAL findings that already have a vendor fix.
+- `Dockerfile-api` and `Dockerfile-mcp` run `apt-get upgrade` on `python:3.12-slim` so Debian security updates (currently OpenSSL `3.5.7-1~deb13u3` and PCRE2 `10.46-1~deb13u3`) are applied before that scan.
 
 ## Recent changes
 
