@@ -44,6 +44,7 @@ Genie/
 ├── utils/                  # shared SSE/logging helpers
 ├── tests/                  # pytest suite
 ├── librechat/              # LibreChat config mounts
+├── .cursor/                # AI agent guidance: RULES.md, SKILLS.md
 ├── docker-compose.yml
 ├── .env.example
 ├── README.md
