@@ -5,6 +5,9 @@ endpoints:
     - name: "genie-agent"
       apiKey: "dummy-key"
       baseURL: "http://api:8000/v1"
+      headers:
+        X-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
+        X-User-Id: "{{LIBRECHAT_USER_ID}}"
 
       models:
         default: ["Genie"]

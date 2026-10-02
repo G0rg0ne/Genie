@@ -28,14 +28,33 @@ def _optional_str(value) -> str | None:
     return None
 
 
-def _trace_ids(body: dict) -> tuple[str | None, str | None]:
-    user_id = _optional_str(body.get("user"))
-    session_id = (
-        _optional_str(body.get("session_id"))
-        or _optional_str(body.get("conversation_id"))
-        or _optional_str(body.get("thread_id"))
+_PLACEHOLDER_IDS = {"new", "undefined", "null", "none"}
+
+
+def _clean_id(value) -> str | None:
+    text = _optional_str(value)
+    if text is None or text.startswith("{{") or text.lower() in _PLACEHOLDER_IDS:
+        return None
+    return text
+
+
+def _trace_ids(req: Request, body: dict) -> tuple[str | None, str | None, str]:
+    """Resolve Langfuse user/session ids from the body, falling back to LibreChat headers.
+
+    Returns ``(user_id, session_id, session_source)``.
+    """
+    user_id = _clean_id(body.get("user")) or _clean_id(req.headers.get("x-user-id"))
+    candidates = (
+        ("body.session_id", body.get("session_id")),
+        ("body.conversation_id", body.get("conversation_id")),
+        ("body.thread_id", body.get("thread_id")),
+        ("header.x-conversation-id", req.headers.get("x-conversation-id")),
     )
-    return user_id, session_id
+    for source, value in candidates:
+        session_id = _clean_id(value)
+        if session_id:
+            return user_id, session_id, source
+    return user_id, None, "none"
 
 
 @router.post("/v1/chat/completions")
@@ -50,7 +69,17 @@ async def completions(req: Request):
     messages = body.get("messages", [])
     last_content = messages[-1]["content"] if messages else ""
     stream = bool(body.get("stream"))
-    user_id, session_id = _trace_ids(body)
+    user_id, session_id, session_source = _trace_ids(req, body)
+    logger.info(
+        f"[{cid}] trace ids user_id={user_id!r} session_id={session_id!r} "
+        f"source={session_source} body_keys={sorted(body.keys())}"
+    )
+    if session_id is None:
+        logger.warning(
+            f"[{cid}] No session id in request; Langfuse trace will have no session. "
+            f"header_names={sorted(req.headers.keys())} "
+            f"raw_x_conversation_id={req.headers.get('x-conversation-id')!r}"
+        )
 
     if not stream and isinstance(last_content, str) and last_content.startswith(TITLE_MARKER):
         question = last_content[len(TITLE_MARKER):].strip()
