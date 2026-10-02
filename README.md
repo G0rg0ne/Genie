@@ -135,6 +135,20 @@ Documented fully in [`.env.example`](.env.example). Genie-specific variables:
 - LibreChat custom endpoint integration (Compose service `librechat`)
 - Streaming SSE with intermediate reasoning/status events from planner/researcher/writer
 - Conversation title generation for LibreChat
+- Langfuse sessions per LibreChat conversation. The session id is read from the request body
+  (`session_id`, `conversation_id`, `thread_id`) or, as a fallback, from the `X-Conversation-Id`
+  header; the user id comes from `user` or `X-User-Id`. The `genie-agent` endpoint in
+  `librechat/librechat.yaml` sends both headers:
+
+  ```yaml
+  headers:
+    X-Conversation-Id: "{{LIBRECHAT_BODY_CONVERSATIONID}}"
+    X-User-Id: "{{LIBRECHAT_USER_ID}}"
+  ```
+
+  Any other LibreChat deployment (e.g. production) needs the same `headers` block and a restart.
+  Each request logs `trace ids ... source=...`; a `No session id in request` warning means the
+  client sent no usable id (unresolved `{{...}}` placeholders and `new` are ignored).
 
 ## Testing
 
