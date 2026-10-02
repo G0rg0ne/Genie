@@ -11,6 +11,9 @@ Observability and prompt management use a self-hosted [Langfuse](https://langfus
 - **`api`** — the LangGraph agent (FastAPI). Handles planning, iterative web research
   (Tavily search + MCP tools), and answer synthesis. Streams responses in OpenAI-compatible
   SSE format, so it plugs directly into LibreChat as a custom endpoint.
+  The planner uses the smallest sufficient set of 1–4 non-overlapping research questions,
+  including one question for an atomic lookup. Tavily returns up to five results per search,
+  and each research run stops after at most three total tool calls (searches and page scrapes).
 - **`mcp`** — a standalone MCP server exposing a `scrape_link` tool (via Firecrawl) for
   fetching full page content as markdown. Genie connects to it over streamable HTTP.
 - **Langfuse (external)** — self-hosted prompt management + tracing. Genie loads chat prompts
@@ -60,9 +63,13 @@ Genie/
   - `planner-prompt`
   - `researcher-prompt`
   - `writer-synth-prompt`
+  Assign the `production` label to the version of each prompt that Genie should use.
+  Startup always fetches that labeled version and fails if it is unavailable.
   
   Preserve the same template variables used previously in LangSmith Hub (for example
-  `date`, `chat_history`, `question`, `MAX_SEARCHES`, `bullets`, `notes`).
+  `date`, `chat_history`, `question`, `MAX_SEARCHES`, `bullets`, `notes`). For backward
+  compatibility, `MAX_SEARCHES` now represents the researcher's total tool-call ceiling,
+  including both web searches and page scrapes.
 
 ## Setup
 
@@ -181,7 +188,9 @@ docker compose down
 ## Deployment notes
 
 - Langfuse is **not** started by this Compose file; Genie talks to your existing self-hosted instance via `LANGFUSE_BASE_URL`.
-- The API container loads prompts during FastAPI startup. Missing credentials, unreachable Langfuse, or missing chat prompts cause startup to fail fast.
+- The API container loads the `production`-labeled prompt versions during FastAPI startup.
+  Missing credentials, unreachable Langfuse, missing chat prompts, or missing `production`
+  labels cause startup to fail fast.
 - Trace export is best-effort and must not turn a successful completion into an API error; pending events are flushed on shutdown.
 - Rebuild/push images with the existing GitHub Actions workflow when cutting a release tag. The workflow fails the image on HIGH or CRITICAL findings that already have a vendor fix.
 - `Dockerfile-api` and `Dockerfile-mcp` run `apt-get upgrade` on `python:3.12-slim` so Debian security updates (currently OpenSSL `3.5.7-1~deb13u3` and PCRE2 `10.46-1~deb13u3`) are applied before that scan.

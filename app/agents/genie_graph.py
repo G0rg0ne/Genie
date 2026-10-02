@@ -20,10 +20,11 @@ from utils.sse import emit_status, extract_text, short
 setup_logging()
 settings = Settings()
 
+MAX_RESEARCH_TOOL_CALLS = 3
 
 #Default agent's tools
 _tavily = TavilySearch(
-    max_results=1,
+    max_results=5,
     topic="general",
     search_depth="basic",
     include_answer=False,
@@ -122,7 +123,6 @@ async def build_agent_graph(prompts: PromptBundle):
         }
 
     async def researcher_node(state: AgentState) -> dict:
-        MAX_SEARCHES = 6
         status = get_stream_writer()
         history = state.research_messages
         seed = []
@@ -130,15 +130,21 @@ async def build_agent_graph(prompts: PromptBundle):
             bullets = "\n".join(f"- {q}" for q in state.sub_questions)
             seed = prompts.researcher.invoke({
                 "date": date.today().isoformat(),
-                "MAX_SEARCHES": MAX_SEARCHES,
+                # Keep the existing Langfuse variable name while treating it
+                # as a total tool-call ceiling in the researcher prompt.
+                "MAX_SEARCHES": MAX_RESEARCH_TOOL_CALLS,
                 "question": state.question,
                 "bullets": bullets,
             }).to_messages()
         convo = [*history, *seed]
-        used = sum(1 for m in convo if isinstance(m, AIMessage) and m.tool_calls)
+        used_tool_calls = sum(
+            1
+            for message in convo
+            if isinstance(message, AIMessage) and message.tool_calls
+        )
         model = (
             llm.bind_tools(tools, parallel_tool_calls=False)
-            if used < MAX_SEARCHES
+            if used_tool_calls < MAX_RESEARCH_TOOL_CALLS
             else llm
         )
         reply = model.invoke(convo)
@@ -148,13 +154,14 @@ async def build_agent_graph(prompts: PromptBundle):
             call = reply.tool_calls[0]
             tool_name = call["name"]
             args = call["args"]
+            step = f"{used_tool_calls + 1}/{MAX_RESEARCH_TOOL_CALLS}"
 
             if tool_name == "web_search":
-                label = f"🔍 Search {used+1}/{MAX_SEARCHES}: {short(args.get('query', ''))}"
+                label = f"🔍 Research step {step}: Search {short(args.get('query', ''))}"
             elif tool_name == "scrape_link":
-                label = f"📄 Reading {short(args.get('link', ''))}"
+                label = f"📄 Research step {step}: Reading {short(args.get('link', ''))}"
             else:
-                label = f"🔧 Calling {tool_name}..."
+                label = f"🔧 Research step {step}: Calling {tool_name}..."
 
             emit_status(status, label)
         else:

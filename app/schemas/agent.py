@@ -44,6 +44,9 @@ class Plan(BaseModel):
     )
     sub_questions: list[str] = Field(
         default_factory=list,
-        description="2-4 specific, independently searchable sub-questions. "
-        "Empty if no research is needed.",
+        description=(
+            "The smallest sufficient set of 1-4 distinct, non-overlapping "
+            "research questions. Use one for an atomic factual lookup. "
+            "Empty if no research is needed."
+        ),
     )
