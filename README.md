@@ -1,10 +1,45 @@
 # Genie
 
-A LangGraph research agent (planner → researcher → writer) exposed as an OpenAI-compatible
-`/v1/chat/completions` endpoint, with a companion MCP tool server for deep web scraping.
-Observability and prompt management use a self-hosted [Langfuse](https://langfuse.com) instance.
+Genie is a personal AI agent I interact with through the open-source
+[LibreChat](https://github.com/danny-avila/LibreChat) interface
+(`ghcr.io/danny-avila/librechat-dev:latest`).
 
-![My Project logo](./assets/app_ss.png)
+![Genie in LibreChat](./assets/SS.png)
+
+## Vision
+
+The starting point is a simple **research agent** built with LangGraph
+(planner → researcher → writer). It has access to tools like
+[Tavily](https://tavily.com) (web search) and [Firecrawl](https://firecrawl.dev)
+(page scraping) through a custom MCP server in [`mcp/`](mcp/).
+
+The longer-term goal is to give this agent more capabilities and strengthen the
+harness around it — more tools, more MCP servers, and a more powerful agent loop —
+so it can take on richer personal workflows over time.
+
+Under the hood, Genie is exposed as an OpenAI-compatible `/v1/chat/completions`
+endpoint so LibreChat (or any compatible client) can talk to it as a custom
+endpoint. Prompt management and observability use a self-hosted
+[Langfuse](https://langfuse.com) instance.
+
+## Observability
+
+The agent is wired directly to a self-hosted Langfuse platform with full tracing
+of every interaction (planner, researcher, tools, writer) and per-call cost
+estimation.
+
+![Langfuse tracing](./assets/langfuse_tracing.png)
+
+## Deployment / Live
+
+Everything runs on my personal Kubernetes cluster through an ArgoCD GitOps
+pipeline. GitHub Actions builds and pushes the images; ArgoCD syncs them to the
+cluster.
+
+**Live at:** [genie.gorgone.app](https://genie.gorgone.app)
+
+Registration is closed for now. If you're interested, reach out on GitHub —
+open an issue on this repo or contact me through my GitHub profile.
 
 ## Architecture
 
@@ -187,6 +222,8 @@ docker compose down
 
 ## Deployment notes
 
+- Production is deployed to a personal Kubernetes cluster via ArgoCD and is live at
+  [genie.gorgone.app](https://genie.gorgone.app). See [Deployment / Live](#deployment--live).
 - Langfuse is **not** started by this Compose file; Genie talks to your existing self-hosted instance via `LANGFUSE_BASE_URL`.
 - The API container loads the `production`-labeled prompt versions during FastAPI startup.
   Missing credentials, unreachable Langfuse, missing chat prompts, or missing `production`
