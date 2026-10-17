@@ -170,13 +170,17 @@ Documented fully in [`.env.example`](.env.example). Genie-specific variables:
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 | `GET` | `/v1/models` | List accessible models |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming). Title requests use the `TITLE_REQUEST::` marker. |
+| `POST` | `/v1/chat/completions` | OpenAI-compatible chat (streaming + non-streaming). Title requests use the `TITLE_REQUEST::` marker and are answered with a fast single-LLM call (JSON or SSE), not the full agent graph. |
 
 ## Frontend / client features
 
 - LibreChat custom endpoint integration (Compose service `librechat`)
 - Streaming SSE with intermediate reasoning/status events from planner/researcher/writer
-- Conversation title generation for LibreChat
+- Conversation title generation for LibreChat (`titleTiming: immediate`). The sidebar
+  title is requested in parallel with the first answer from the user's message alone.
+  LibreChat sends `TITLE_REQUEST::{convo}` via `titlePrompt`; Genie detects the marker
+  anywhere in the last message, cleans the result (no quotes/trailing punctuation), and
+  falls back to `Genie Conversation` if generation fails.
 - Langfuse sessions per LibreChat conversation. The session id is read from the request body
   (`session_id`, `conversation_id`, `thread_id`) or, as a fallback, from the `X-Conversation-Id`
   header; the user id comes from `user` or `X-User-Id`. The `genie-agent` endpoint in

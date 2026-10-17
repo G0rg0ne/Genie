@@ -1,4 +1,5 @@
 import json
+import re
 import time
 import uuid
 
@@ -18,6 +19,14 @@ setup_logging()
 ANSWER_NODE = "writer"
 DEFAULT_MODEL = "Genie"
 TITLE_MARKER = "TITLE_REQUEST::"
+FALLBACK_TITLE = TitleOutput.model_fields["title"].default
+TITLE_PROMPT = (
+    "Summarize this question into a short, 3-6 word conversation title. "
+    "Use the same language as the question. "
+    "Reply with the title only — no quotes and no trailing punctuation.\n\n"
+    "{question}"
+)
+MAX_TITLE_LEN = 80
 
 router = APIRouter()
 
@@ -57,6 +66,92 @@ def _trace_ids(req: Request, body: dict) -> tuple[str | None, str | None, str]:
     return user_id, None, "none"
 
 
+def _is_title_request(messages: list) -> str | None:
+    """Return the question after ``TITLE_MARKER`` if this is a title request."""
+    if not messages:
+        return None
+    text = extract_text(messages[-1].get("content"))
+    idx = text.find(TITLE_MARKER)
+    if idx < 0:
+        return None
+    return text[idx + len(TITLE_MARKER):].strip() or None
+
+
+def _clean_title(raw: str | None) -> str:
+    """Strip quotes/whitespace, drop trailing punctuation, and cap length."""
+    if not raw or not str(raw).strip():
+        return FALLBACK_TITLE
+    title = str(raw).strip()
+    if (title[0], title[-1]) in {('"', '"'), ("'", "'"), ("“", "”"), ("‘", "’")}:
+        title = title[1:-1].strip()
+    title = title.strip(" \t\r\n\"'")
+    title = re.sub(r"[.!?…]+$", "", title).strip()
+    if not title:
+        return FALLBACK_TITLE
+    if len(title) > MAX_TITLE_LEN:
+        title = title[:MAX_TITLE_LEN].rstrip()
+    return title
+
+
+async def _generate_title(question: str, *, cid: str, model: str,
+                          user_id: str | None, session_id: str | None) -> str:
+    config = build_trace_config(
+        cid=cid,
+        model=model,
+        stream=False,
+        user_id=user_id,
+        session_id=session_id,
+        run_name="genie-title",
+    )
+    try:
+        title_result = await llm.with_structured_output(TitleOutput).ainvoke(
+            TITLE_PROMPT.format(question=question),
+            config=config,
+        )
+        return _clean_title(getattr(title_result, "title", None))
+    except Exception:
+        logger.exception(f"[{cid}] Title generation failed; using fallback")
+        return FALLBACK_TITLE
+
+
+def _title_json_response(cid: str, model: str, title: str) -> JSONResponse:
+    return JSONResponse({
+        "id": cid,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": title},
+        }],
+    })
+
+
+def _title_stream_response(cid: str, model: str, title: str) -> StreamingResponse:
+    async def gen():
+        created = int(time.time())
+
+        opener = base_chunk(cid, model, created)
+        opener["choices"][0]["delta"] = {"role": "assistant", "content": ""}
+        yield f"data: {json.dumps(opener)}\n\n"
+
+        content = base_chunk(cid, model, created)
+        content["choices"][0]["delta"] = {"content": title}
+        yield f"data: {json.dumps(content)}\n\n"
+
+        final = base_chunk(cid, model, created)
+        final["choices"][0]["finish_reason"] = "stop"
+        yield f"data: {json.dumps(final)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.post("/v1/chat/completions")
 async def completions(req: Request):
     logger.info("Request received ...")
@@ -67,7 +162,6 @@ async def completions(req: Request):
     model = body.get("model") or DEFAULT_MODEL
     cid = f"chatcmpl-{uuid.uuid4().hex}"
     messages = body.get("messages", [])
-    last_content = messages[-1]["content"] if messages else ""
     stream = bool(body.get("stream"))
     user_id, session_id, session_source = _trace_ids(req, body)
     logger.info(
@@ -81,39 +175,22 @@ async def completions(req: Request):
             f"raw_x_conversation_id={req.headers.get('x-conversation-id')!r}"
         )
 
-    if not stream and isinstance(last_content, str) and last_content.startswith(TITLE_MARKER):
-        question = last_content[len(TITLE_MARKER):].strip()
-        config = build_trace_config(
+    title_question = _is_title_request(messages)
+    if title_question is not None:
+        logger.info(f"[{cid}] title request question={title_question!r} stream={stream}")
+        title = await _generate_title(
+            title_question,
             cid=cid,
             model=model,
-            stream=False,
             user_id=user_id,
             session_id=session_id,
-            run_name="genie-title",
         )
-        try:
-            title_result = llm.with_structured_output(TitleOutput).invoke(
-                f"Summarize this question into a short, 3-6 word conversation title:\n\n{question}",
-                config=config,
-            )
-        except Exception as exc:
-            logger.exception(f"[{cid}] Title generation failed")
-            return JSONResponse(status_code=500, content={"error": {"message": str(exc)}})
-
-        return JSONResponse({
-            "id": cid,
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model,
-            "choices": [{
-                "index": 0,
-                "finish_reason": "stop",
-                "message": {"role": "assistant", "content": title_result.title},
-            }],
-        })
+        if stream:
+            return _title_stream_response(cid, model, title)
+        return _title_json_response(cid, model, title)
 
     try:
-        inputs = build_inputs(body.get("messages", []))
+        inputs = build_inputs(messages)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": {"message": str(exc)}})
 
