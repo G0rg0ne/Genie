@@ -7,8 +7,10 @@ making changes. For step-by-step playbooks for common tasks, see [`SKILLS.md`](S
 
 ## 1. What this project is
 
-Genie is a LangGraph research agent (**planner → researcher ⇄ tools → writer**) exposed as an
-**OpenAI-compatible** `/v1/chat/completions` API, consumed by **LibreChat** as a custom endpoint.
+Genie is a LangGraph research agent (**orchestrator → planner → researcher ⇄ tools → writer**)
+exposed as an **OpenAI-compatible** `/v1/chat/completions` API, consumed by **LibreChat** as a
+custom endpoint. The orchestrator rewrites follow-ups from chat history and may skip to the
+writer for pure rewrite requests (`action=respond`).
 
 | Service | Location | Role |
 |---------|----------|------|
@@ -126,7 +128,11 @@ The API must stay **OpenAI Chat Completions compatible** because LibreChat depen
 
 - State is `schemas.agent.AgentState` (Pydantic). Nodes return a **partial dict** of updated fields;
   list fields with `add_messages` are appended, not replaced.
-- Routing functions are pure, typed with `Literal[...]` return values.
+- Entry node is `orchestrator` → sets `standalone_question` + `action` (`plan` | `respond`).
+  Planner and researcher consume `standalone_question` (fall back to `question`). Writer receives
+  `chat_history` and `standalone_question` as `question`.
+- Routing functions are pure, typed with `Literal[...]` return values
+  (`route_after_orchestrator`, `route_after_plan`, `route_after_research`).
 - The researcher is capped by `MAX_SEARCHES`; once reached, the LLM is invoked **without** tools to force synthesis.
   Keep `parallel_tool_calls=False` unless status labels and the cap logic are updated together.
 - Every node should emit a user-facing status with `emit_status(get_stream_writer(), "...")`.
@@ -141,11 +147,15 @@ The API must stay **OpenAI Chat Completions compatible** because LibreChat depen
 ## 8. Prompts & Langfuse
 
 - Prompts live in **Langfuse Prompt Management**, not in code. Required chat prompts:
-  `planner-prompt`, `researcher-prompt`, `writer-synth-prompt` (see `PROMPT_NAMES`).
+  `orchestrator-prompt`, `planner-prompt`, `researcher-prompt`, `writer-synth-prompt`
+  (see `PROMPT_NAMES`).
 - Template variables currently used:
-  - planner: `date`, `chat_history`, `question`
+  - orchestrator: `date`, `chat_history` (message placeholder), `question`
+  - planner: `date`, `chat_history` (message placeholder), `question`
   - researcher: `date`, `MAX_SEARCHES`, `question`, `bullets`
-  - writer: `notes`, `question`
+  - writer: `notes`, `question`, `chat_history` (message placeholder)
+  Use a Langfuse **message placeholder** for `chat_history`, not `{{chat_history}}` as a
+  text variable — otherwise the model sees a Python list string instead of chat turns.
   Changing variables in code requires the matching Langfuse prompt change (and vice versa) — call it out in `DEVELOPMENT.md`.
 - Prompts are loaded **once at startup** and fail fast (missing prompt, wrong type, or fallback → `LangfusePromptError`).
   Keep that behavior; do not silently fall back to inline prompts.

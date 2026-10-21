@@ -10,10 +10,11 @@ from langchain_tavily import TavilySearch
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from loguru import logger
 
 from core.config import Settings
 from core.langfuse_client import PromptBundle
-from schemas.agent import AgentState, Plan
+from schemas.agent import AgentState, OrchestratorDecision, Plan
 from utils.logger import setup_logging
 from utils.sse import emit_status, extract_text, short
 
@@ -88,6 +89,9 @@ async def get_tools() -> list:
 # Define LLM call
 llm = ChatOpenAI(model=settings.model_name, use_responses_api=True)
 
+def route_after_orchestrator(state: AgentState) -> Literal["planner", "writer"]:
+    return "planner" if state.action == "plan" else "writer"
+
 def route_after_plan(state: AgentState) -> Literal["researcher", "writer"]:
     return "researcher" if state.needs_research else "writer"
 
@@ -107,13 +111,38 @@ async def build_agent_graph(prompts: PromptBundle):
     mcp_tools = await mcp_client.get_tools()
     tools = [web_search, *mcp_tools]
 
-    def planner_node(state: AgentState) -> dict:
+    def orchestrator_node(state: AgentState) -> dict:
         status = get_stream_writer()
-        emit_status(status, "🧭 Planning the approach...")
-        formatted_prompt = prompts.planner.invoke({
+        emit_status(status, "Understanding the conversation...")
+        formatted_prompt = prompts.orchestrator.invoke({
             "date": date.today().isoformat(),
             "chat_history": state.chat_history,
             "question": state.question,
+        })
+        decision = llm.with_structured_output(OrchestratorDecision).invoke(
+            formatted_prompt
+        )
+        standalone = (decision.standalone_question or "").strip() or state.question
+        action = decision.action if decision.action in ("plan", "respond") else "plan"
+        logger.info(
+            "orchestrator original={!r} standalone={!r} action={}",
+            state.question,
+            standalone,
+            action,
+        )
+        return {
+            "standalone_question": standalone,
+            "action": action,
+        }
+
+    def planner_node(state: AgentState) -> dict:
+        status = get_stream_writer()
+        emit_status(status, "🧭 Planning the approach...")
+        question = state.standalone_question or state.question
+        formatted_prompt = prompts.planner.invoke({
+            "date": date.today().isoformat(),
+            "chat_history": state.chat_history,
+            "question": question,
         })
         planer_response = llm.with_structured_output(Plan).invoke(formatted_prompt)
 
@@ -128,12 +157,13 @@ async def build_agent_graph(prompts: PromptBundle):
         seed = []
         if not history:
             bullets = "\n".join(f"- {q}" for q in state.sub_questions)
+            question = state.standalone_question or state.question
             seed = prompts.researcher.invoke({
                 "date": date.today().isoformat(),
                 # Keep the existing Langfuse variable name while treating it
                 # as a total tool-call ceiling in the researcher prompt.
                 "MAX_SEARCHES": MAX_RESEARCH_TOOL_CALLS,
-                "question": state.question,
+                "question": question,
                 "bullets": bullets,
             }).to_messages()
         convo = [*history, *seed]
@@ -174,20 +204,24 @@ async def build_agent_graph(prompts: PromptBundle):
         status = get_stream_writer()
         emit_status(status, "✍️ Writing the answer...")
         notes = state.notes or "(no research was performed)"
+        question = state.standalone_question or state.question
         formatted_prompt = prompts.writer.invoke({
             "notes": notes,
-            "question": state.question,
+            "question": question,
+            "chat_history": state.chat_history,
         })
         reporter_response = llm.invoke(formatted_prompt)
         return {"answer": reporter_response.text}
 
     builder = StateGraph(AgentState)
+    builder.add_node("orchestrator", orchestrator_node)
     builder.add_node("planner", planner_node)
     builder.add_node("researcher", researcher_node)
     builder.add_node("tools", ToolNode(tools, messages_key="research_messages"))
     builder.add_node("writer", writer_node)
 
-    builder.add_edge(START, "planner")
+    builder.add_edge(START, "orchestrator")
+    builder.add_conditional_edges("orchestrator", route_after_orchestrator)
     builder.add_conditional_edges("planner", route_after_plan)
     builder.add_conditional_edges("researcher", route_after_research)
     builder.add_edge("tools", "researcher")

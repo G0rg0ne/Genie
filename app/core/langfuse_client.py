@@ -13,6 +13,7 @@ from loguru import logger
 from core.config import Settings
 
 PROMPT_NAMES = (
+    ("orchestrator", "orchestrator-prompt"),
     ("planner", "planner-prompt"),
     ("researcher", "researcher-prompt"),
     ("writer", "writer-synth-prompt"),
@@ -24,6 +25,7 @@ PROMPT_LABEL = "production"
 class PromptBundle:
     """LangChain chat prompts loaded from Langfuse Prompt Management."""
 
+    orchestrator: ChatPromptTemplate
     planner: ChatPromptTemplate
     researcher: ChatPromptTemplate
     writer: ChatPromptTemplate
@@ -98,7 +100,7 @@ def load_chat_prompt(client: Langfuse, name: str) -> ChatPromptTemplate:
 
 
 def load_prompts(client: Langfuse) -> PromptBundle:
-    """Load the three Genie prompts required by the agent graph."""
+    """Load the Genie prompts required by the agent graph."""
     loaded: dict[str, ChatPromptTemplate] = {}
     for attr, name in PROMPT_NAMES:
         loaded[attr] = load_chat_prompt(client, name)

@@ -8,10 +8,12 @@ Genie is a personal AI agent I interact with through the open-source
 
 ## Vision
 
-The starting point is a simple **research agent** built with LangGraph
-(planner → researcher → writer). It has access to tools like
-[Tavily](https://tavily.com) (web search) and [Firecrawl](https://firecrawl.dev)
-(page scraping) through a custom MCP server in [`mcp/`](mcp/).
+The starting point is a **research agent** built with LangGraph
+(orchestrator → planner → researcher → writer). The orchestrator rewrites
+follow-ups using chat history and can skip research for pure rewrite requests.
+It has access to tools like [Tavily](https://tavily.com) (web search) and
+[Firecrawl](https://firecrawl.dev) (page scraping) through a custom MCP server
+in [`mcp/`](mcp/).
 
 The longer-term goal is to give this agent more capabilities and strengthen the
 harness around it — more tools, more MCP servers, and a more powerful agent loop —
@@ -43,12 +45,15 @@ open an issue on this repo or contact me through my GitHub profile.
 
 ## Architecture
 
-- **`api`** — the LangGraph agent (FastAPI). Handles planning, iterative web research
-  (Tavily search + MCP tools), and answer synthesis. Streams responses in OpenAI-compatible
-  SSE format, so it plugs directly into LibreChat as a custom endpoint.
-  The planner uses the smallest sufficient set of 1–4 non-overlapping research questions,
-  including one question for an atomic lookup. Tavily returns up to five results per search,
-  and each research run stops after at most three total tool calls (searches and page scrapes).
+- **`api`** — the LangGraph agent (FastAPI). An orchestrator first turns the latest
+  message into a standalone question (using LibreChat's conversation history) and
+  either routes to the planner or straight to the writer. Then: planning, iterative
+  web research (Tavily search + MCP tools), and answer synthesis. Streams responses
+  in OpenAI-compatible SSE format, so it plugs directly into LibreChat as a custom
+  endpoint. The planner uses the smallest sufficient set of 1–4 non-overlapping
+  research questions, including one question for an atomic lookup. Tavily returns up
+  to five results per search, and each research run stops after at most three total
+  tool calls (searches and page scrapes).
 - **`mcp`** — a standalone MCP server exposing a `scrape_link` tool (via Firecrawl) for
   fetching full page content as markdown. Genie connects to it over streamable HTTP.
 - **Langfuse (external)** — self-hosted prompt management + tracing. Genie loads chat prompts
@@ -95,16 +100,26 @@ Genie/
 - API keys: OpenAI (or your LLM provider), Tavily, Firecrawl (`FC_KEY` for MCP)
 - Access to a self-hosted Langfuse project (public key, secret key, base URL)
 - In Langfuse, create **chat** prompts named exactly:
+  - `orchestrator-prompt`
   - `planner-prompt`
   - `researcher-prompt`
   - `writer-synth-prompt`
   Assign the `production` label to the version of each prompt that Genie should use.
   Startup always fetches that labeled version and fails if it is unavailable.
-  
-  Preserve the same template variables used previously in LangSmith Hub (for example
-  `date`, `chat_history`, `question`, `MAX_SEARCHES`, `bullets`, `notes`). For backward
-  compatibility, `MAX_SEARCHES` now represents the researcher's total tool-call ceiling,
-  including both web searches and page scrapes.
+
+  Template variables (and how to pass history):
+  - `orchestrator-prompt`: `date`, `question`, plus a **message placeholder** named
+    `chat_history` (not a `{{chat_history}}` text variable)
+  - `planner-prompt`: `date`, `question`, plus a **message placeholder** named
+    `chat_history`
+  - `researcher-prompt`: `date`, `MAX_SEARCHES`, `question`, `bullets`
+  - `writer-synth-prompt`: `notes`, `question`, plus a **message placeholder** named
+    `chat_history`
+
+  `MAX_SEARCHES` is the researcher's total tool-call ceiling (searches + page scrapes).
+  Message placeholders convert to LangChain `MessagesPlaceholder` via
+  `get_langchain_prompt()` so prior turns are real chat messages, not a Python list
+  string. See [DEVELOPMENT.md](DEVELOPMENT.md) for suggested orchestrator prompt text.
 
 ## Setup
 
@@ -175,7 +190,7 @@ Documented fully in [`.env.example`](.env.example). Genie-specific variables:
 ## Frontend / client features
 
 - LibreChat custom endpoint integration (Compose service `librechat`)
-- Streaming SSE with intermediate reasoning/status events from planner/researcher/writer
+- Streaming SSE with intermediate reasoning/status events from orchestrator/planner/researcher/writer
 - Conversation title generation for LibreChat (`titleTiming: immediate`). The sidebar
   title is requested in parallel with the first answer from the user's message alone.
   LibreChat sends `TITLE_REQUEST::{convo}` via `titlePrompt`; Genie detects the marker
@@ -216,7 +231,9 @@ After deploying with real Langfuse credentials, smoke-test:
 
 1. Non-streaming `POST /v1/chat/completions`
 2. Streaming `POST /v1/chat/completions` with `"stream": true`
-3. Confirm one coherent trace per request in Langfuse, with nested planner/researcher/tool/writer spans and linked prompt versions
+3. Confirm one coherent trace per request in Langfuse, with nested orchestrator/planner/researcher/tool/writer spans and linked prompt versions
+4. Follow-up with a pronoun (e.g. "and its price?") — orchestrator log should show a rewritten standalone question; research should target that subject
+5. "Make that shorter" — should route `action=respond`, skip planner/researcher, and rewrite using chat history
 
 ## Stopping
 
